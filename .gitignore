@@ -1,9 +1,6 @@
-# Build output
-*.o
 ticket_system
 ipc_extensions
 ticket_log.txt
-
-# Editor files
+*.o
 .vscode/
 .DS_Store
