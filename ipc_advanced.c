@@ -73,13 +73,12 @@ static int derive_key(const char *passphrase, const unsigned char salt[SALT_SIZE
                              PBKDF2_ROUNDS, EVP_sha256(), KEY_SIZE, key) == 1 ? 0 : -1;
 }
 
-/* AES-256-GCM gives each message confidentiality plus an authentication tag. */
+/* AES-256-GCM provides message confidentiality and tamper authentication. */
 static int encrypt_message(const unsigned char key[KEY_SIZE], const char *plaintext, SecureMessage *message)
 {
     EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
-    int length = 0, final_length = 0;
+    int length = 0, final_length = 0, result = -1;
     size_t plain_length = strlen(plaintext);
-    int result = -1;
     if (context == NULL || plain_length >= TEXT_SIZE || RAND_bytes(message->nonce, NONCE_SIZE) != 1) goto done;
     if (EVP_EncryptInit_ex(context, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
         EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, NULL) != 1 ||
@@ -98,8 +97,7 @@ done:
 static int decrypt_message(const unsigned char key[KEY_SIZE], const SecureMessage *message, char plaintext[TEXT_SIZE])
 {
     EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
-    int length = 0, final_length = 0;
-    int result = -1;
+    int length = 0, final_length = 0, result = -1;
     if (context == NULL || message->length >= TEXT_SIZE) goto done;
     if (EVP_DecryptInit_ex(context, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
         EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, NULL) != 1 ||
@@ -130,15 +128,13 @@ static int valid_room_name(const char *name)
 static void encrypted_peer(int read_fd, int write_fd, const unsigned char key[KEY_SIZE])
 {
     for (;;) {
-        SecureMessage incoming;
-        char plaintext[TEXT_SIZE];
+        SecureMessage incoming = {0}, outgoing = {0};
+        char plaintext[TEXT_SIZE], reply[TEXT_SIZE];
         if (read_full(read_fd, &incoming, sizeof(incoming)) != 1) break;
         if (decrypt_message(key, &incoming, plaintext) < 0) {
             fprintf(stderr, "Peer rejected an unauthenticated/invalid message.\n");
             break;
         }
-        SecureMessage outgoing;
-        char reply[TEXT_SIZE];
         (void)snprintf(reply, sizeof(reply), "support: %.240s", plaintext);
         if (encrypt_message(key, reply, &outgoing) < 0 ||
             write_full(write_fd, &outgoing, sizeof(outgoing)) < 0) break;
@@ -149,12 +145,12 @@ static void encrypted_peer(int read_fd, int write_fd, const unsigned char key[KE
     _exit(EXIT_SUCCESS);
 }
 
-/* Each room name gets its own pair of private FIFOs. Messages use AES-GCM. */
+/* Named-FIFO parent/child room. Room names select unique private FIFO paths. */
 static int demo_rooms(const char *room)
 {
     char incoming_path[128], outgoing_path[128], passphrase[TEXT_SIZE] = {0};
     unsigned char salt[SALT_SIZE], key[KEY_SIZE] = {0};
-    int write_fd = -1, read_fd = -1, result = 0;
+    int write_fd = -1, read_fd = -1, created_in = 0, created_out = 0, result = 0;
     pid_t child = -1;
 
     if (!valid_room_name(room)) {
@@ -166,19 +162,24 @@ static int demo_rooms(const char *room)
 
     fputs("Room passphrase (visible input): ", stdout);
     (void)fflush(stdout);
-    if (!read_line(passphrase, sizeof(passphrase)) || passphrase[0] == '\0' || RAND_bytes(salt, sizeof(salt)) != 1 ||
-        derive_key(passphrase, salt, key) < 0) {
+    if (!read_line(passphrase, sizeof(passphrase)) || passphrase[0] == '\0' ||
+        RAND_bytes(salt, sizeof(salt)) != 1 || derive_key(passphrase, salt, key) < 0) {
         fprintf(stderr, "Could not initialize room encryption.\n");
         result = 1;
         goto cleanup;
     }
-    if (mkfifo(incoming_path, 0600) < 0 || mkfifo(outgoing_path, 0600) < 0) {
-        perror("mkfifo (room may already exist; remove its stale FIFO files first)");
-        (void)unlink(incoming_path);
-        (void)unlink(outgoing_path);
+    if (mkfifo(incoming_path, 0600) < 0) {
+        perror("mkfifo room input (room may already exist)");
         result = 1;
         goto cleanup;
     }
+    created_in = 1;
+    if (mkfifo(outgoing_path, 0600) < 0) {
+        perror("mkfifo room output (room may already exist)");
+        result = 1;
+        goto cleanup;
+    }
+    created_out = 1;
 
     child = fork();
     if (child < 0) {
@@ -202,9 +203,8 @@ static int demo_rooms(const char *room)
     }
     printf("Encrypted FIFO room '%s'. Type /quit to leave.\n", room);
     for (;;) {
-        char plaintext[TEXT_SIZE];
-        SecureMessage request, response;
-        char reply[TEXT_SIZE];
+        char plaintext[TEXT_SIZE], reply[TEXT_SIZE];
+        SecureMessage request = {0}, response = {0};
         fputs("you> ", stdout);
         (void)fflush(stdout);
         if (!read_line(plaintext, sizeof(plaintext))) break;
@@ -224,8 +224,8 @@ cleanup:
     if (write_fd >= 0) (void)close(write_fd);
     if (read_fd >= 0) (void)close(read_fd);
     if (child > 0) while (waitpid(child, NULL, 0) < 0 && errno == EINTR) { }
-    (void)unlink(incoming_path);
-    (void)unlink(outgoing_path);
+    if (created_in) (void)unlink(incoming_path);
+    if (created_out) (void)unlink(outgoing_path);
     OPENSSL_cleanse(key, sizeof(key));
     OPENSSL_cleanse(passphrase, sizeof(passphrase));
     return result;
@@ -257,7 +257,8 @@ static int demo_server(void)
         if (children[i] < 0) { perror("fork worker"); return 1; }
         if (children[i] == 0) {
             for (int j = 0; j < CHAT_WORKERS; ++j) {
-                (void)close(requests[j][1]); (void)close(responses[j][0]);
+                (void)close(requests[j][1]);
+                (void)close(responses[j][0]);
                 if (j != i) { (void)close(requests[j][0]); (void)close(responses[j][1]); }
             }
             worker_loop(requests[i][0], responses[i][1], (unsigned int)i + 1U);
@@ -270,18 +271,23 @@ static int demo_server(void)
     for (;;) {
         fputs("server> ", stdout); (void)fflush(stdout);
         if (!read_line(line, sizeof(line)) || strcmp(line, "/quit") == 0) break;
-        int worker = 0; char text[TEXT_SIZE] = {0};
+        int worker = 0;
+        char text[TEXT_SIZE] = {0};
         if (sscanf(line, "/send %d %255[^\n]", &worker, text) != 2 || worker < 1 || worker > CHAT_WORKERS) {
-            fprintf(stderr, "Usage: /send WORKER_ID MESSAGE (worker IDs 1-%d)\n", CHAT_WORKERS); continue;
+            fprintf(stderr, "Usage: /send WORKER_ID MESSAGE (worker IDs 1-%d)\n", CHAT_WORKERS);
+            continue;
         }
         Message request = {{0}}, reply = {{0}};
         (void)snprintf(request.text, sizeof(request.text), "%s", text);
         if (write_full(requests[worker - 1][1], &request, sizeof(request)) < 0 ||
-            read_full(responses[worker - 1][0], &reply, sizeof(reply)) != 1) { perror("worker communication"); result = 1; break; }
+            read_full(responses[worker - 1][0], &reply, sizeof(reply)) != 1) {
+            perror("worker communication"); result = 1; break;
+        }
         puts(reply.text);
     }
     for (int i = 0; i < CHAT_WORKERS; ++i) {
-        Message stop = {{0}}, reply = {{0}}; (void)snprintf(stop.text, sizeof(stop.text), "/quit");
+        Message stop = {{0}}, reply = {{0}};
+        (void)snprintf(stop.text, sizeof(stop.text), "/quit");
         if (write_full(requests[i][1], &stop, sizeof(stop)) == 0) (void)read_full(responses[i][0], &reply, sizeof(reply));
         (void)close(requests[i][1]); (void)close(responses[i][0]);
     }
@@ -308,23 +314,27 @@ static int demo_signal_chat(void)
             (void)snprintf(reply.text, sizeof(reply.text), "signal child received: %.220s", request.text);
             if (write_full(response_pipe[1], &reply, sizeof(reply)) < 0) break;
             (void)kill(getppid(), SIGUSR1);
-            if (strcmp(request.text, "/quit') == 0) break;
+            if (strcmp(request.text, "/quit") == 0) break;
         }
         _exit(EXIT_SUCCESS);
     }
     (void)close(request_pipe[0]); (void)close(response_pipe[1]);
     puts("Signal-controlled pipe chat. Type /quit to leave.");
-    int result = 0; char line[TEXT_SIZE];
+    int result = 0;
+    char line[TEXT_SIZE];
     for (;;) {
         fputs("you> ", stdout); (void)fflush(stdout);
         if (!read_line(line, sizeof(line))) break;
-        Message request = {{0}}, reply = {{0}}; (void)snprintf(request.text, sizeof(request.text), "%s", line);
+        Message request = {{0}}, reply = {{0}};
+        (void)snprintf(request.text, sizeof(request.text), "%s", line);
         if (write_full(request_pipe[1], &request, sizeof(request)) < 0) { result = 1; break; }
         int received = 0;
-        if (sigwait(&signal_set, &received) != 0 || received != SIGUSR1 || read_full(response_pipe[0], &reply, sizeof(reply)) != 1) {
+        if (sigwait(&signal_set, &received) != 0 || received != SIGUSR1 ||
+            read_full(response_pipe[0], &reply, sizeof(reply)) != 1) {
             fprintf(stderr, "signal chat response failed\n"); result = 1; break;
         }
-        puts(reply.text); if (strcmp(line, "/quit") == 0) break;
+        puts(reply.text);
+        if (strcmp(line, "/quit") == 0) break;
     }
     (void)close(request_pipe[1]); (void)close(response_pipe[0]);
     while (waitpid(child, NULL, 0) < 0 && errno == EINTR) { }
@@ -342,20 +352,29 @@ static int demo_encrypt(void)
 {
     char passphrase[TEXT_SIZE] = {0}, plaintext[TEXT_SIZE] = {0}, recovered[TEXT_SIZE];
     unsigned char salt[SALT_SIZE], key[KEY_SIZE] = {0};
-    SecureMessage message;
+    SecureMessage message = {0};
     int result = 1;
     fputs("Passphrase (visible input): ", stdout); (void)fflush(stdout);
-    if (!read_line(passphrase, sizeof(passphrase)) || passphrase[0] == '\0' || RAND_bytes(salt, sizeof(salt)) != 1 ||
-        derive_key(passphrase, salt, key) < 0) { fprintf(stderr, "Key setup failed.\n"); goto done; }
+    if (!read_line(passphrase, sizeof(passphrase)) || passphrase[0] == '\0' ||
+        RAND_bytes(salt, sizeof(salt)) != 1 || derive_key(passphrase, salt, key) < 0) {
+        fprintf(stderr, "Key setup failed.\n"); goto done;
+    }
     fputs("Message: ", stdout); (void)fflush(stdout);
     if (!read_line(plaintext, sizeof(plaintext)) || encrypt_message(key, plaintext, &message) < 0 ||
-        decrypt_message(key, &message, recovered) < 0) { fprintf(stderr, "Encryption/decryption failed.\n"); goto done; }
-    print_hex("salt: ", salt, sizeof(salt)); print_hex("nonce: ", message.nonce, sizeof(message.nonce));
-    print_hex("ciphertext: ", message.ciphertext, message.length); print_hex("tag: ", message.tag, sizeof(message.tag));
-    printf("Authenticated plaintext: %s\n", recovered); result = 0;
+        decrypt_message(key, &message, recovered) < 0) {
+        fprintf(stderr, "Encryption/decryption failed.\n"); goto done;
+    }
+    print_hex("salt: ", salt, sizeof(salt));
+    print_hex("nonce: ", message.nonce, sizeof(message.nonce));
+    print_hex("ciphertext: ", message.ciphertext, message.length);
+    print_hex("tag: ", message.tag, sizeof(message.tag));
+    printf("Authenticated plaintext: %s\n", recovered);
+    result = 0;
 done:
-    OPENSSL_cleanse(key, sizeof(key)); OPENSSL_cleanse(passphrase, sizeof(passphrase));
-    OPENSSL_cleanse(plaintext, sizeof(plaintext)); return result;
+    OPENSSL_cleanse(key, sizeof(key));
+    OPENSSL_cleanse(passphrase, sizeof(passphrase));
+    OPENSSL_cleanse(plaintext, sizeof(plaintext));
+    return result;
 }
 
 static void usage(const char *program)
@@ -371,5 +390,6 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "server") == 0) return demo_server();
     if (argc == 2 && strcmp(argv[1], "signal-chat") == 0) return demo_signal_chat();
     if (argc == 2 && strcmp(argv[1], "encrypt") == 0) return demo_encrypt();
-    usage(argv[0]); return EXIT_FAILURE;
+    usage(argv[0]);
+    return EXIT_FAILURE;
 }
