@@ -5,6 +5,8 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wstrict-proto
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -O2
 LDLIBS_IPC ?= -pthread -lrt
 LDLIBS_CRYPTO ?= -lcrypto
+GTEST_CFLAGS ?= $(shell pkg-config --cflags gtest_main 2>/dev/null)
+GTEST_LIBS ?= $(shell pkg-config --libs gtest_main 2>/dev/null || echo '-lgtest_main -lgtest -pthread')
 BUILD_DIR := build
 COVERAGE_DIR := $(BUILD_DIR)/coverage
 
@@ -44,12 +46,12 @@ integration: ticket_system $(BUILD_DIR)/integration_test
 
 advanced-integration: integration
 
-# The C++ integration tests use a small self-contained harness; GoogleTest is not required.
+# Requires GoogleTest development headers and libraries. pkg-config is used when available.
 gtest: ticket_system | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest
+	$(CXX) $(CXXFLAGS) $(GTEST_CFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest $(GTEST_LIBS)
 	TICKET_SYSTEM_BIN=$(CURDIR)/ticket_system ./$(BUILD_DIR)/test_gtest
 
-# Run the C unit and integration suites, then the C++ integration suite.
+# Run unit, integration, and GoogleTest suites. Coverage and Valgrind targets are separate.
 test:
 	$(MAKE) unit
 	$(MAKE) integration
@@ -67,7 +69,7 @@ misra:
 	cppcheck --error-exitcode=1 --enable=all --std=c11 --addon=$(MISRA_ADDON) \
 		main.c ipc_extensions.c ipc_advanced.c tests/test_ticket.c tests/integration_test.c 2> misra_report.txt
 
-# Coverage is measured for main.c; integration and unit tests are implemented in C.
+# Instrument main.c and enforce the project's configured line/branch/function thresholds.
 coverage: ticket_system $(BUILD_DIR)/test_ticket $(BUILD_DIR)/integration_test | $(COVERAGE_DIR)
 	rm -f $(COVERAGE_DIR)/*.gcda $(COVERAGE_DIR)/*.gcno
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/ticket_system main.c
@@ -91,15 +93,15 @@ $(COVERAGE_DIR): | $(BUILD_DIR)
 	mkdir -p $@
 
 valgrind: ticket_system
-	@if ! command -v valgrind >/dev/null 2>&1; then echo "valgrind not installed." >&2; exit 127; fi
+	@command -v valgrind >/dev/null 2>&1 || { echo "valgrind is required for this target." >&2; exit 127; }
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Valgrind|memory check|1' '/process' '/quit' | \
 		valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(CURDIR)/ticket_system); \
 	status=$$?; rm -rf "$$tmp"; exit $$status
 
-# Helgrind checks synchronization; this application primarily uses processes and pipes.
+# Helgrind instruments the process-based pipe workflow; it is a useful diagnostic, not a thread-race proof.
 helgrind: ticket_system
-	@if ! command -v valgrind >/dev/null 2>&1; then echo "valgrind (including Helgrind) is not installed." >&2; exit 127; fi
+	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind/Helgrind is required for this target." >&2; exit 127; }
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Helgrind|IPC check|1' '/process' '/quit' | \
 		valgrind --tool=helgrind --error-exitcode=1 $(CURDIR)/ticket_system); \
