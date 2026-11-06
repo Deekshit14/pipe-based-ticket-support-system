@@ -39,17 +39,17 @@ $(BUILD_DIR)/integration_test: tests/integration_test.c | $(BUILD_DIR)
 unit: $(BUILD_DIR)/test_ticket
 	(cd $(BUILD_DIR) && ./test_ticket)
 
-integration: ticket_system ipc_advanced $(BUILD_DIR)/integration_test
-	./$(BUILD_DIR)/integration_test $(CURDIR)/ticket_system $(CURDIR)/ipc_advanced
+integration: ticket_system $(BUILD_DIR)/integration_test
+	./$(BUILD_DIR)/integration_test $(CURDIR)/ticket_system
 
 advanced-integration: integration
 
-# Requires GoogleTest development headers and libraries to be installed.
+# The C++ integration tests use a small self-contained harness; GoogleTest is not required.
 gtest: ticket_system | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest -lgtest -lgtest_main -pthread
+	$(CXX) $(CXXFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest
 	TICKET_SYSTEM_BIN=$(CURDIR)/ticket_system ./$(BUILD_DIR)/test_gtest
 
-# Run the C unit and integration suites, then the existing optional C++/GoogleTest suite.
+# Run the C unit and integration suites, then the C++ integration suite.
 test:
 	$(MAKE) unit
 	$(MAKE) integration
@@ -73,8 +73,15 @@ coverage: ticket_system $(BUILD_DIR)/test_ticket $(BUILD_DIR)/integration_test |
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/ticket_system main.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/test_ticket tests/test_ticket.c
 	(cd $(COVERAGE_DIR) && ./test_ticket)
-	./$(BUILD_DIR)/integration_test $(CURDIR)/$(COVERAGE_DIR)/ticket_system $(CURDIR)/ipc_advanced
-	gcovr --root $(CURDIR) --object-directory $(CURDIR)/$(COVERAGE_DIR) \
+	./$(BUILD_DIR)/integration_test $(CURDIR)/$(COVERAGE_DIR)/ticket_system
+	@if command -v gcovr >/dev/null 2>&1; then \
+		GCOVR=gcovr; \
+	elif python3 -m gcovr --version >/dev/null 2>&1; then \
+		GCOVR="python3 -m gcovr"; \
+	else \
+		echo "gcovr is required. Install it with: python3 -m pip install --user gcovr" >&2; exit 127; \
+	fi; \
+	$$GCOVR --root $(CURDIR) --object-directory $(CURDIR)/$(COVERAGE_DIR) \
 		--filter '.*main[.]c$$' --txt --output $(COVERAGE_DIR)/coverage_report.txt \
 		--fail-under-line 95 --fail-under-branch 95 --fail-under-function 95
 
@@ -84,13 +91,15 @@ $(COVERAGE_DIR): | $(BUILD_DIR)
 	mkdir -p $@
 
 valgrind: ticket_system
+	@if ! command -v valgrind >/dev/null 2>&1; then echo "valgrind not installed." >&2; exit 127; fi
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Valgrind|memory check|1' '/process' '/quit' | \
 		valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(CURDIR)/ticket_system); \
 	status=$$?; rm -rf "$$tmp"; exit $$status
 
-# Helgrind checks thread synchronization; this application primarily uses processes.
+# Helgrind checks synchronization; this application primarily uses processes and pipes.
 helgrind: ticket_system
+	@if ! command -v valgrind >/dev/null 2>&1; then echo "valgrind (including Helgrind) is not installed." >&2; exit 127; fi
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Helgrind|IPC check|1' '/process' '/quit' | \
 		valgrind --tool=helgrind --error-exitcode=1 $(CURDIR)/ticket_system); \
