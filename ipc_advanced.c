@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/evp.h>
@@ -59,7 +58,7 @@ static int read_line(char *buffer, size_t capacity)
     return 1;
 }
 
-/* A persistent parent/child conversation over two named FIFOs (one per direction). */
+/* Interactive parent/child conversation over two named FIFOs. */
 static int demo_rooms(void)
 {
     char parent_to_child[128], child_to_parent[128];
@@ -71,7 +70,6 @@ static int demo_rooms(void)
         (void)unlink(child_to_parent);
         return 1;
     }
-
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
@@ -88,8 +86,7 @@ static int demo_rooms(void)
             if (read_full(input_fd, &request, sizeof(request)) != 1) break;
             request.text[TEXT_SIZE - 1] = '\0';
             (void)snprintf(reply.text, sizeof(reply.text), "support room received: %.220s", request.text);
-            if (write_full(output_fd, &reply, sizeof(reply)) < 0 ||
-                strcmp(request.text, "/quit") == 0) break;
+            if (write_full(output_fd, &reply, sizeof(reply)) < 0 || strcmp(request.text, "/quit") == 0) break;
         }
         (void)close(input_fd);
         (void)close(output_fd);
@@ -111,13 +108,12 @@ static int demo_rooms(void)
             (void)fflush(stdout);
             if (!read_line(line, sizeof(line))) break;
             (void)snprintf(request.text, sizeof(request.text), "%s", line);
-            if (write_full(output_fd, &request, sizeof(request)) < 0 ||
-                read_full(input_fd, &reply, sizeof(reply)) != 1) {
+            if (write_full(output_fd, &request, sizeof(request)) < 0 || read_full(input_fd, &reply, sizeof(reply)) != 1) {
                 perror("FIFO chat exchange");
                 result = 1;
                 break;
             }
-            printf("%s\n", reply.text);
+            puts(reply.text);
             if (strcmp(line, "/quit") == 0) break;
         }
     }
@@ -136,15 +132,14 @@ static void worker_loop(int request_fd, int response_fd, unsigned int worker_id)
         if (read_full(request_fd, &request, sizeof(request)) != 1) break;
         request.text[TEXT_SIZE - 1] = '\0';
         (void)snprintf(reply.text, sizeof(reply.text), "agent-%u: %.240s", worker_id, request.text);
-        if (write_full(response_fd, &reply, sizeof(reply)) < 0 ||
-            strcmp(request.text, "/quit") == 0) break;
+        if (write_full(response_fd, &reply, sizeof(reply)) < 0 || strcmp(request.text, "/quit") == 0) break;
     }
     (void)close(request_fd);
     (void)close(response_fd);
     _exit(EXIT_SUCCESS);
 }
 
-/* Persistent child agents are addressed by /send WORKER_ID MESSAGE. */
+/* Persistent child agents addressed with /send WORKER_ID MESSAGE. */
 static int demo_server(void)
 {
     int requests[CHAT_WORKERS][2], responses[CHAT_WORKERS][2];
@@ -188,8 +183,7 @@ static int demo_server(void)
         if (strcmp(line, "/quit") == 0) break;
         int worker = 0;
         char text[TEXT_SIZE] = {0};
-        if (sscanf(line, "/send %d %255[^"]", &worker, text) != 2 ||
-            worker < 1 || worker > CHAT_WORKERS) {
+        if (sscanf(line, "/send %d %255[^\n]", &worker, text) != 2 || worker < 1 || worker > CHAT_WORKERS) {
             fprintf(stderr, "Usage: /send WORKER_ID MESSAGE (worker IDs 1-%d)\n", CHAT_WORKERS);
             continue;
         }
@@ -203,12 +197,10 @@ static int demo_server(void)
         }
         puts(reply.text);
     }
-
     for (int i = 0; i < CHAT_WORKERS; ++i) {
         Message stop = {{0}}, reply = {{0}};
         (void)snprintf(stop.text, sizeof(stop.text), "/quit");
-        if (write_full(requests[i][1], &stop, sizeof(stop)) == 0)
-            (void)read_full(responses[i][0], &reply, sizeof(reply));
+        if (write_full(requests[i][1], &stop, sizeof(stop)) == 0) (void)read_full(responses[i][0], &reply, sizeof(reply));
         (void)close(requests[i][1]);
         (void)close(responses[i][0]);
     }
@@ -220,13 +212,12 @@ static int demo_server(void)
 
 static sigset_t chat_signal_set;
 
-/* SIGUSR1 notifies the parent that a child response is ready on the reply pipe. */
+/* SIGUSR1 notifies the parent that a child response is available on its pipe. */
 static int demo_signal_chat(void)
 {
     int request_pipe[2], response_pipe[2];
     if (sigemptyset(&chat_signal_set) < 0 || sigaddset(&chat_signal_set, SIGUSR1) < 0 ||
-        sigprocmask(SIG_BLOCK, &chat_signal_set, NULL) < 0 ||
-        pipe(request_pipe) < 0 || pipe(response_pipe) < 0) {
+        sigprocmask(SIG_BLOCK, &chat_signal_set, NULL) < 0 || pipe(request_pipe) < 0 || pipe(response_pipe) < 0) {
         perror("signal chat setup");
         return 1;
     }
@@ -265,9 +256,9 @@ static int demo_signal_chat(void)
             break;
         }
         int received_signal = 0;
-        if (sigwait(&chat_signal_set, &received_signal) != 0 ||
-            received_signal != SIGUSR1 || read_full(response_pipe[0], &reply, sizeof(reply)) != 1) {
-            perror("signal chat response");
+        if (sigwait(&chat_signal_set, &received_signal) != 0 || received_signal != SIGUSR1 ||
+            read_full(response_pipe[0], &reply, sizeof(reply)) != 1) {
+            fprintf(stderr, "signal chat response failed\n");
             result = 1;
             break;
         }
@@ -287,12 +278,12 @@ static void print_hex(const char *label, const unsigned char *data, size_t lengt
     putchar('\n');
 }
 
-/* AES-256-GCM + PBKDF2 demo: authenticated encryption, not a home-grown cipher. */
+/* Authenticated AES-256-GCM demo using PBKDF2 key derivation and OpenSSL. */
 static int demo_encrypt(void)
 {
-    char passphrase[TEXT_SIZE], plaintext[TEXT_SIZE];
+    char passphrase[TEXT_SIZE] = {0}, plaintext[TEXT_SIZE] = {0};
     unsigned char salt[SALT_SIZE], nonce[NONCE_SIZE], tag[TAG_SIZE];
-    unsigned char key[KEY_SIZE], ciphertext[TEXT_SIZE], recovered[TEXT_SIZE];
+    unsigned char key[KEY_SIZE] = {0}, ciphertext[TEXT_SIZE], recovered[TEXT_SIZE];
     int encrypted_length = 0, final_length = 0, recovered_length = 0;
     EVP_CIPHER_CTX *ctx = NULL;
     int status = 1;
@@ -301,11 +292,11 @@ static int demo_encrypt(void)
     (void)fflush(stdout);
     if (!read_line(passphrase, sizeof(passphrase)) || passphrase[0] == '\0') {
         fprintf(stderr, "A non-empty passphrase is required.\n");
-        return 1;
+        goto cleanup;
     }
     fputs("Message to encrypt: ", stdout);
     (void)fflush(stdout);
-    if (!read_line(plaintext, sizeof(plaintext))) return 1;
+    if (!read_line(plaintext, sizeof(plaintext))) goto cleanup;
     if (RAND_bytes(salt, sizeof(salt)) != 1 || RAND_bytes(nonce, sizeof(nonce)) != 1 ||
         PKCS5_PBKDF2_HMAC(passphrase, (int)strlen(passphrase), salt, sizeof(salt),
                           PBKDF2_ROUNDS, EVP_sha256(), sizeof(key), key) != 1) {
@@ -314,12 +305,12 @@ static int demo_encrypt(void)
     }
     ctx = EVP_CIPHER_CTX_new();
     if (ctx == NULL || EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(nonce), NULL) != 1 ||
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)sizeof(nonce), NULL) != 1 ||
         EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) != 1 ||
-        EVP_EncryptUpdate(ctx, ciphertext, &encrypted_length,
-                          (const unsigned char *)plaintext, (int)strlen(plaintext)) != 1 ||
+        EVP_EncryptUpdate(ctx, ciphertext, &encrypted_length, (const unsigned char *)plaintext,
+                          (int)strlen(plaintext)) != 1 ||
         EVP_EncryptFinal_ex(ctx, ciphertext + encrypted_length, &final_length) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, sizeof(tag), tag) != 1) {
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, (int)sizeof(tag), tag) != 1) {
         fprintf(stderr, "Encryption failed.\n");
         goto cleanup;
     }
@@ -331,10 +322,10 @@ static int demo_encrypt(void)
     print_hex("authentication tag: ", tag, sizeof(tag));
 
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, sizeof(nonce), NULL) != 1 ||
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)sizeof(nonce), NULL) != 1 ||
         EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) != 1 ||
         EVP_DecryptUpdate(ctx, recovered, &recovered_length, ciphertext, encrypted_length) != 1 ||
-        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, sizeof(tag), tag) != 1 ||
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, (int)sizeof(tag), tag) != 1 ||
         EVP_DecryptFinal_ex(ctx, recovered + recovered_length, &final_length) != 1) {
         fprintf(stderr, "Authentication/decryption failed.\n");
         goto cleanup;
@@ -355,7 +346,7 @@ static void usage(const char *program)
 {
     fprintf(stderr, "Usage: %s rooms|server|signal-chat|encrypt\n", program);
     fprintf(stderr, "  rooms       interactive chat over two named FIFOs\n");
-    fprintf(stderr, "  server      multi-child support chat server (3 persistent agents)\n");
+    fprintf(stderr, "  server      multi-child support server (3 persistent agents)\n");
     fprintf(stderr, "  signal-chat pipe chat with SIGUSR1 response notifications\n");
     fprintf(stderr, "  encrypt     AES-256-GCM message encryption/decryption demo\n");
 }

@@ -4,13 +4,14 @@ PYTHON ?= python3
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wstrict-prototypes -O2
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -O2
 LDLIBS_IPC ?= -pthread -lrt
+LDLIBS_CRYPTO ?= -lcrypto
 BUILD_DIR := build
 COVERAGE_DIR := $(BUILD_DIR)/coverage
 
-.PHONY: all clean run extensions test unit integration gtest cppcheck misra \
+.PHONY: all clean run extensions test unit integration advanced-integration gtest cppcheck misra \
         coverage function_coverage branch_coverage valgrind helgrind
 
-all: ticket_system ipc_extensions
+all: ticket_system ipc_extensions ipc_advanced
 
 ticket_system: main.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -18,7 +19,10 @@ ticket_system: main.c
 ipc_extensions: ipc_extensions.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS_IPC)
 
-extensions: ipc_extensions
+ipc_advanced: ipc_advanced.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS_CRYPTO)
+
+extensions: ipc_extensions ipc_advanced
 
 run: ticket_system
 	./ticket_system
@@ -35,20 +39,24 @@ unit: $(BUILD_DIR)/test_ticket
 integration: ticket_system
 	$(PYTHON) tests/integration_test.py ./ticket_system
 
+advanced-integration: ipc_advanced
+	$(PYTHON) tests/advanced_integration_test.py ./ipc_advanced
+
 # Requires GoogleTest development headers and libraries to be installed.
 gtest: ticket_system | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest -lgtest -lgtest_main -pthread
 	TICKET_SYSTEM_BIN=$(CURDIR)/ticket_system ./$(BUILD_DIR)/test_gtest
 
 # Run suites in a fixed order, including GoogleTest, even when make is invoked with -j.
-test: ticket_system
+test:
 	$(MAKE) unit
 	$(MAKE) integration
+	$(MAKE) advanced-integration
 	$(MAKE) gtest
 
 cppcheck:
 	cppcheck --error-exitcode=1 --enable=warning,style,performance,portability \
-		--std=c11 main.c ipc_extensions.c 2> cppcheck_report.txt
+		--std=c11 main.c ipc_extensions.c ipc_advanced.c 2> cppcheck_report.txt
 
 # Provide a cppcheck MISRA addon/configuration, e.g. MISRA_ADDON=misra.json.
 # This is a rule check, not certification of MISRA compliance.
@@ -56,7 +64,7 @@ MISRA_ADDON ?=
 misra:
 	@test -n "$(MISRA_ADDON)" || (echo "Set MISRA_ADDON to a cppcheck MISRA addon/configuration" >&2; exit 2)
 	cppcheck --error-exitcode=1 --enable=all --std=c11 \
-		--addon=$(MISRA_ADDON) main.c ipc_extensions.c 2> misra_report.txt
+		--addon=$(MISRA_ADDON) main.c ipc_extensions.c ipc_advanced.c 2> misra_report.txt
 
 # Coverage is measured for main.c; the command fails if any threshold is missed.
 coverage: ticket_system $(BUILD_DIR)/test_ticket | $(COVERAGE_DIR)
@@ -74,14 +82,13 @@ function_coverage branch_coverage: coverage
 $(COVERAGE_DIR): | $(BUILD_DIR)
 	mkdir -p $@
 
-# Run useful ticket operations under Valgrind in a disposable working directory.
 valgrind: ticket_system
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Valgrind|memory check|1' '/process' '/quit' | \
 		valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(CURDIR)/ticket_system); \
 	status=$$?; rm -rf "$$tmp"; exit $$status
 
-# Helgrind targets the process program; pipe-based IPC is not thread synchronization.
+# Helgrind checks thread synchronization; this application primarily uses processes.
 helgrind: ticket_system
 	@tmp=$$(mktemp -d); \
 	(cd "$$tmp" && printf '%s\n' '/new Helgrind|IPC check|1' '/process' '/quit' | \
@@ -89,6 +96,6 @@ helgrind: ticket_system
 	status=$$?; rm -rf "$$tmp"; exit $$status
 
 clean:
-	rm -f ticket_system ipc_extensions cppcheck_report.txt misra_report.txt
+	rm -f ticket_system ipc_extensions ipc_advanced cppcheck_report.txt misra_report.txt
 	rm -f *.gcda *.gcno *.gcov ticket_log.txt
 	rm -rf $(BUILD_DIR)
