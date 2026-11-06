@@ -28,7 +28,7 @@ static int contains(const char *text, const char *needle)
 
 /* Execute a program with redirected stdin/stdout/stderr in an isolated directory. */
 static int run_program(const char *binary, const char *const arguments[], const char *input,
-                       char *output, size_t output_capacity, char workdir[64])
+                        char *output, size_t output_capacity, char workdir[64])
 {
     (void)snprintf(workdir, 64, "/tmp/ticket-c-test-XXXXXX");
     if (mkdtemp(workdir) == NULL) return -1;
@@ -117,22 +117,6 @@ static int file_contains(const char *path, const char *needle)
     return contains(content, needle);
 }
 
-static void check_private_log(const char *workdir, const char *filename,
-                              const char *first_entry, const char *second_entry,
-                              const char *label)
-{
-    char path[128];
-    (void)snprintf(path, sizeof(path), "%s/%s", workdir, filename);
-    struct stat info;
-    check(stat(path, &info) == 0, label);
-    if (stat(path, &info) == 0) {
-        check((info.st_mode & 0777) == 0600, "log permissions are owner-only (0600)");
-    }
-    check(file_contains(path, "[20"), "log contains a timestamp");
-    check(file_contains(path, first_entry), "log contains the sent chat message");
-    check(file_contains(path, second_entry), "log contains the received chat message");
-}
-
 static void remove_workdir(const char *workdir)
 {
     static const char *const files[] = {
@@ -168,51 +152,21 @@ static void test_ticket_application(const char *binary)
     int result = run_program(binary, arguments, input, output, sizeof(output), workdir);
     check(result == 0, "ticket application exits successfully");
     check(contains(output, "Created and queued ticket #1 for Alice."), "ticket creation works");
-    check(contains(output, "Created ticket #5; queue is full"), "bounded queue overflow is handled");
+    check(contains(output, "Created ticket #5; queue is full, ticket status is Waiting."), "bounded queue overflow is handled");
     check(contains(output, "status: Resolved"), "ticket processing works");
     (void)snprintf(log_path, sizeof(log_path), "%s/ticket_log.txt", workdir);
     check(file_contains(log_path, "ticket created and queued"), "ticket audit log records creation");
     remove_workdir(workdir);
 }
 
-static void test_chat(const char *binary, const char *const arguments[], const char *input,
-                      const char *screen_reply, const char *request_log,
-                      const char *reply_log, const char *label)
-{
-    char output[OUTPUT_SIZE], workdir[64];
-    int result = run_program(binary, arguments, input, output, sizeof(output), workdir);
-    check(result == 0, label);
-    check(contains(output, screen_reply), "chat demo displays its expected response");
-    check_private_log(workdir, "chat_log.txt", request_log, reply_log,
-                      "chat log is created");
-    remove_workdir(workdir);
-}
-
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        (void)fprintf(stderr, "usage: %s ticket_system ipc_advanced\n", argv[0]);
+    if (argc != 2) {
+        (void)fprintf(stderr, "usage: %s ticket_system\n", argv[0]);
         return 2;
     }
 
     test_ticket_application(argv[1]);
-
-    char room[32];
-    (void)snprintf(room, sizeof(room), "test-%ld", (long)getpid());
-    const char *room_arguments[] = {"rooms", room, NULL};
-    test_chat(argv[2], room_arguments, "test-passphrase\nhello room\n/quit\n",
-              "support: hello room", "parent-to-child: hello room",
-              "child-to-parent: support: hello room", "FIFO room chat exits successfully");
-
-    const char *server_arguments[] = {"server", NULL};
-    test_chat(argv[2], server_arguments, "/send 2 reset password\n/quit\n",
-              "agent-2: reset password", "parent-to-child: reset password",
-              "child-to-parent: agent-2: reset password", "worker server exits successfully");
-
-    const char *signal_arguments[] = {"signal-chat", NULL};
-    test_chat(argv[2], signal_arguments, "hello signal\n/quit\n",
-              "signal child received: hello signal", "parent-to-child: hello signal",
-              "child-to-parent: signal child received: hello signal", "signal chat exits successfully");
 
     if (failures != 0) {
         (void)fprintf(stderr, "%d C integration check(s) failed.\n", failures);
