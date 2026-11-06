@@ -5,7 +5,7 @@ The project targets Linux/POSIX. Ticket data uses fixed-size arrays and a bounde
 ## Make targets
 
 - `make` — build the ticket system and IPC demonstrations.
-- `make test` — run native C unit tests, Python process-level integration tests, and GoogleTest integration tests.
+- `make test` — run native C unit tests, Python process-level integration tests, and GoogleTest integration tests in sequence (also with `make -j`).
 - `make unit` / `make integration` / `make gtest` — run one test suite. GoogleTest headers and libraries must be installed for `make gtest` and `make test`.
 - `make cppcheck` — static analysis; writes diagnostics to `cppcheck_report.txt`.
 - `make misra MISRA_ADDON=misra.json` — run the configured cppcheck MISRA addon and write diagnostics to `misra_report.txt`. Provide a valid addon/configuration for your cppcheck installation. This is not a claim of certified MISRA compliance.

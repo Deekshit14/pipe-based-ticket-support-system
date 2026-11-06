@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -19,7 +20,7 @@ std::string shell_quote(const std::string &value)
         }
     }
     quoted += "'";
-    return quoted + "'";
+    return quoted;
 }
 
 std::string run_application(const std::string &commands)
@@ -30,26 +31,31 @@ std::string run_application(const std::string &commands)
         return {};
     }
 
-    const auto base = std::filesystem::temp_directory_path() / "ticket-system-gtest";
-    const auto input_path = base.string() + ".in";
-    const auto output_path = base.string() + ".out";
+    static unsigned int test_number = 0;
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ticket-system-gtest-" + std::to_string(static_cast<long long>(getpid())) +
+         "-" + std::to_string(test_number++));
+    std::filesystem::create_directories(temp_dir);
+    const auto input_path = temp_dir / "input.txt";
+    const auto output_path = temp_dir / "output.txt";
     {
         std::ofstream input(input_path);
         input << commands;
         if (!input) {
             ADD_FAILURE() << "Could not write test input";
+            std::filesystem::remove_all(temp_dir);
             return {};
         }
     }
 
-    const std::string command = shell_quote(binary_env) + " < " + shell_quote(input_path) +
-                                " > " + shell_quote(output_path) + " 2>&1";
+    const std::string command = "cd " + shell_quote(temp_dir.string()) + " && " +
+        shell_quote(binary_env) + " < " + shell_quote(input_path.string()) +
+        " > " + shell_quote(output_path.string()) + " 2>&1";
     const int status = std::system(command.c_str());
     std::ifstream output_file(output_path);
     const std::string output((std::istreambuf_iterator<char>(output_file)),
                              std::istreambuf_iterator<char>());
-    std::filesystem::remove(input_path);
-    std::filesystem::remove(output_path);
+    std::filesystem::remove_all(temp_dir);
     EXPECT_EQ(status, 0) << output;
     return output;
 }

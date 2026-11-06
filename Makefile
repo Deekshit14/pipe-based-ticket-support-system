@@ -40,7 +40,11 @@ gtest: ticket_system | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) tests/test_gtest.cpp -o $(BUILD_DIR)/test_gtest -lgtest -lgtest_main -pthread
 	TICKET_SYSTEM_BIN=$(CURDIR)/ticket_system ./$(BUILD_DIR)/test_gtest
 
-test: unit integration gtest
+# Run suites in a fixed order, including GoogleTest, even when make is invoked with -j.
+test: ticket_system
+	$(MAKE) unit
+	$(MAKE) integration
+	$(MAKE) gtest
 
 cppcheck:
 	cppcheck --error-exitcode=1 --enable=warning,style,performance,portability \
