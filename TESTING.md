@@ -1,22 +1,22 @@
 # Linux testing and code-quality targets
 
-The project targets Linux/POSIX. Ticket data uses fixed-size arrays and a bounded FIFO queue—**no linked lists are used**. The production program remains C. Native C tests cover internal queue/command behavior, while the optional GoogleTest C++ suite exercises the executable as a process-level integration test.
+The project targets Linux/POSIX. Ticket data uses fixed-size arrays and a bounded FIFO queue—**no linked lists are used**. The production application is C; GoogleTest tests the executable from a separate C++ test file.
+
+## Build and demos
+
+`make` builds the ticket program and IPC demos. Install OpenSSL development headers/libraries for `ipc_advanced` (linked with `-lcrypto`). Run:
+
+- `./ipc_advanced rooms ROOM_NAME` — named-FIFO parent/child room. Room names isolate FIFO paths; messages in both directions are encrypted and authenticated with AES-256-GCM. Enter the same room passphrase for the demo peers (the forked child inherits the derived key). The passphrase input is visible. This is a local educational demo, not a network chat or production key exchange.
+- `./ipc_advanced server` — three persistent child agents, addressed with `/send ID MESSAGE`.
+- `./ipc_advanced signal-chat` — pipe chat with SIGUSR1 response notifications.
+- `./ipc_advanced encrypt` — standalone AES-256-GCM round-trip demonstration.
 
 ## Make targets
 
-- `make` — build the ticket system and IPC demonstrations.
-- `make test` — run native C unit tests, Python process-level integration tests, and GoogleTest integration tests in sequence (also with `make -j`).
-- `make unit` / `make integration` / `make gtest` — run one test suite. GoogleTest headers and libraries must be installed for `make gtest` and `make test`.
-- `make cppcheck` — static analysis; writes diagnostics to `cppcheck_report.txt`.
-- `make misra MISRA_ADDON=misra.json` — run the configured cppcheck MISRA addon and write diagnostics to `misra_report.txt`. Provide a valid addon/configuration for your cppcheck installation. This is not a claim of certified MISRA compliance.
-- `make valgrind` — run a ticket create/process/quit scenario under Valgrind.
-- `make helgrind` — run the same process workflow under Helgrind. Helgrind checks thread synchronization; the program's IPC is process-based, so this is not a substitute for dedicated process/IPC testing.
-- `make coverage` — build instrumented tests, run unit and integration suites, produce `build/coverage/coverage_report.txt`, and fail unless `main.c` reaches at least 95% line, branch, and function coverage.
-- `make function_coverage` / `make branch_coverage` — aliases for the coverage report and all three threshold checks.
-- `make clean` — remove build products, reports, coverage files, and generated ticket logs.
+- `make test` — run native C unit tests, core process integration tests, advanced IPC/encryption smoke tests, and GoogleTest integration tests in order. Install GoogleTest development files and OpenSSL development files first.
+- `make cppcheck` — static analysis.
+- `make misra MISRA_ADDON=...` — run a supplied cppcheck MISRA addon/configuration; this is not certification.
+- `make valgrind` / `make helgrind` — run memory/synchronization tooling on the core ticket process.
+- `make coverage` — measure core `main.c` coverage and enforce at least 95% line, branch, and function coverage. This remains a target threshold, not a measured result until run.
 
-## Linux dependencies
-
-GCC, GNU Make, Python 3, and POSIX/Linux are required for the core application and base tests. Optional checks require `cppcheck`, Valgrind, `gcovr`, and a configured cppcheck MISRA addon. GoogleTest and a C++17 compiler are needed for the GoogleTest target. Install these using your Linux distribution's package manager or the upstream project instructions.
-
-Coverage is a measured result, not guaranteed by the target's existence. If the threshold fails, add tests for uncovered behavior and rerun `make coverage`. No coverage, static-analysis, MISRA, Valgrind, or Helgrind pass is claimed until you run the corresponding target on your Linux server.
+GoogleTest, OpenSSL, cppcheck, Valgrind, gcovr, and a MISRA addon are external Linux dependencies. Helgrind concerns thread synchronization; these examples communicate with processes, so Helgrind does not verify general IPC correctness.
