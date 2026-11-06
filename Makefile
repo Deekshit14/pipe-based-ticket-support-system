@@ -1,5 +1,6 @@
 CC = gcc
 CXX = g++
+CPPFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wstrict-prototypes -O2
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -O2
 LDLIBS_IPC ?= -pthread -lrt
@@ -13,13 +14,13 @@ COVERAGE_DIR := $(BUILD_DIR)/coverage
 all: ticket_system ipc_extensions ipc_advanced
 
 ticket_system: main.c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $<
 
 ipc_extensions: ipc_extensions.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS_IPC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDLIBS_IPC)
 
 ipc_advanced: ipc_advanced.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS_CRYPTO)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDLIBS_CRYPTO)
 
 extensions: ipc_extensions ipc_advanced
 
@@ -30,10 +31,10 @@ $(BUILD_DIR):
 	mkdir -p $@
 
 $(BUILD_DIR)/test_ticket: tests/test_ticket.c main.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ tests/test_ticket.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/test_ticket.c
 
 $(BUILD_DIR)/integration_test: tests/integration_test.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ tests/integration_test.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ tests/integration_test.c
 
 unit: $(BUILD_DIR)/test_ticket
 	(cd $(BUILD_DIR) && ./test_ticket)
@@ -69,8 +70,8 @@ misra:
 # Coverage is measured for main.c; integration and unit tests are implemented in C.
 coverage: ticket_system $(BUILD_DIR)/test_ticket $(BUILD_DIR)/integration_test | $(COVERAGE_DIR)
 	rm -f $(COVERAGE_DIR)/*.gcda $(COVERAGE_DIR)/*.gcno
-	$(CC) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/ticket_system main.c
-	$(CC) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/test_ticket tests/test_ticket.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/ticket_system main.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/test_ticket tests/test_ticket.c
 	(cd $(COVERAGE_DIR) && ./test_ticket)
 	./$(BUILD_DIR)/integration_test $(CURDIR)/$(COVERAGE_DIR)/ticket_system $(CURDIR)/ipc_advanced
 	gcovr --root $(CURDIR) --object-directory $(CURDIR)/$(COVERAGE_DIR) \
