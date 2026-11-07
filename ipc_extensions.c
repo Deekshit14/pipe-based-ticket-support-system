@@ -68,7 +68,8 @@ static int demo_fifo(void) {
     Message m = {{0}};
     if (w < 0 || r < 0 || !get_message(&m) || write_full(w, &m, sizeof(m)) < 0 || read_full(r, &m, sizeof(m)) != 1) { perror("FIFO exchange"); status = 1; }
     else printf("Reply: %s\n", m.text);
-    if (w >= 0) close(w); if (r >= 0) close(r);
+    if (w >= 0) close(w);
+    if (r >= 0) close(r);
     waitpid(pid, NULL, 0); unlink(in_path); unlink(out_path); return status;
 }
 
@@ -106,8 +107,6 @@ static int demo_shm(void) {
     waitpid(pid, NULL, 0); sem_destroy(&shared->request_ready); sem_destroy(&shared->response_ready); munmap(shared, sizeof(*shared)); close(fd); shm_unlink(name); return status;
 }
 
-static volatile sig_atomic_t got_signal = 0;
-static void on_usr1(int signo) { (void)signo; got_signal = 1; }
 static int demo_signal(void) {
     int p[2]; sigset_t set, old;
     sigemptyset(&set); sigaddset(&set, SIGUSR1);
@@ -124,7 +123,7 @@ static int demo_signal(void) {
     int sig = 0, status = 0;
     if (sigwait(&set, &sig) != 0) { fprintf(stderr, "sigwait failed\n"); status = 1; }
     else { Message m; if (read_full(p[0], &m, sizeof(m)) != 1) { perror("signal pipe read"); status = 1; } else printf("Signal notified reception: %s\n", m.text); }
-    close(p[0]); waitpid(pid, NULL, 0); sigprocmask(SIG_SETMASK, &old, NULL); (void)got_signal; return status;
+    close(p[0]); waitpid(pid, NULL, 0); sigprocmask(SIG_SETMASK, &old, NULL); return status;
 }
 
 static int demo_workers(void) {
