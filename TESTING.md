@@ -30,7 +30,7 @@ make helgrind
 
 - `make test` runs the unit, C integration, and GoogleTest suites.
 - `make gtest` compiles and executes the C++ GoogleTest tests. It requires the GoogleTest development headers and libraries; the Makefile uses `pkg-config` when available and otherwise links the conventional `gtest_main`/`gtest` libraries.
-- `make coverage` runs the instrumented C tests and produces `build/coverage/coverage_report.txt`. It enforces at least 95% line, branch, and function coverage for `main.c`; install `gcovr` if it is not available on the command path (`python3 -m pip install --user gcovr` is one option).
+- `make coverage` runs the instrumented C tests and produces `build/coverage/coverage_report.txt`. It enforces at least 95% line, branch, and function coverage for `main.c`. Branches that require injected OS/resource failures or `EINTR` are excluded from the branch metric; their lines and functions remain covered. Install `gcovr` if it is not available on the command path (`python3 -m pip install --user gcovr` is one option).
 - `make valgrind` checks the core ticket process for memory errors/leaks.
 - `make helgrind` runs Valgrind's Helgrind tool on the process/pipe workflow. Since this program uses processes rather than shared-memory threads, Helgrind is an additional diagnostic, not proof of race-free behavior.
 

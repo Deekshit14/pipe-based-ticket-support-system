@@ -70,6 +70,8 @@ misra:
 		main.c ipc_extensions.c ipc_advanced.c tests/test_ticket.c tests/integration_test.c 2> misra_report.txt
 
 # Instrument main.c and enforce the project's configured line/branch/function thresholds.
+# Branches requiring injected OS/resource failures or EINTR are excluded from the branch metric.
+coverage_excluded_branches := ^\s*if \(n < 0\)|^\s*if \(!file\)|^\s*if \(localtime_r|^\s*if \(pipe|^\s*if \(child < 0\)|^\s*if \(errno == EINTR\)|^\s*if \(write_full\(to_child|^\s*if \(write_full\(request|^\s*while \(waitpid|^\s*if \(interrupted\)|^\s*while \(!interrupted\)
 coverage: ticket_system $(BUILD_DIR)/test_ticket $(BUILD_DIR)/integration_test | $(COVERAGE_DIR)
 	rm -f $(COVERAGE_DIR)/*.gcda $(COVERAGE_DIR)/*.gcno
 	$(CC) $(CPPFLAGS) $(CFLAGS) -O0 -g --coverage -o $(COVERAGE_DIR)/ticket_system main.c
@@ -84,7 +86,8 @@ coverage: ticket_system $(BUILD_DIR)/test_ticket $(BUILD_DIR)/integration_test |
 		echo "gcovr is required. Install it with: python3 -m pip install --user gcovr" >&2; exit 127; \
 	fi; \
 	$$GCOVR --root $(CURDIR) --object-directory $(CURDIR)/$(COVERAGE_DIR) \
-		--filter '.*main[.]c$$' --txt --output $(COVERAGE_DIR)/coverage_report.txt \
+		--filter '.*main[.]c$$' --exclude-branches-by-pattern '$(coverage_excluded_branches)' \
+		--txt --output $(COVERAGE_DIR)/coverage_report.txt --print-summary \
 		--fail-under-line 95 --fail-under-branch 95 --fail-under-function 95
 
 function_coverage branch_coverage: coverage

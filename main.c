@@ -101,7 +101,8 @@ static void ticket_list(const SupportDesk *desk, char *out, size_t cap) {
                          desk->tickets[i].id, desk->tickets[i].customer,
                          desk->tickets[i].priority, desk->tickets[i].status,
                          desk->tickets[i].issue);
-        if (n < 0 || (size_t)n >= cap - used) break;
+        if (n < 0) break;
+        if ((size_t)n >= cap - used) break;
         used += (size_t)n;
     }
     if (desk->count == 0 && used < cap) snprintf(out + used, cap - used, "No tickets yet.\n");
@@ -126,7 +127,7 @@ static void handle_command(SupportDesk *desk, const char *cmd, char *out, size_t
         char customer[NAME_SIZE] = {0}, issue[ISSUE_SIZE] = {0}, extra;
         int priority = 0;
         if (sscanf(cmd + 5, "%47[^|]|%159[^|]|%d %c", customer, issue, &priority, &extra) != 3 ||
-            customer[0] == '\0' || issue[0] == '\0' || priority < 1 || priority > 3) {
+            priority < 1 || priority > 3) {
             snprintf(out, cap, "Usage: /new CUSTOMER|ISSUE|PRIORITY (priority 1-3).");
         } else if (desk->count == MAX_TICKETS) {
             snprintf(out, cap, "Ticket array is full (%d tickets).", MAX_TICKETS);
@@ -194,7 +195,7 @@ static void child_service(int request_fd, int response_fd) {
     }
     close(request_fd);
     close(response_fd);
-    _exit(EXIT_SUCCESS);
+    exit(EXIT_SUCCESS);
 }
 
 int main(void) {

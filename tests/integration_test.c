@@ -28,7 +28,8 @@ static int contains(const char *text, const char *needle)
 
 /* Execute a program with redirected stdin/stdout/stderr in an isolated directory. */
 static int run_program(const char *binary, const char *const arguments[], const char *input,
-                        char *output, size_t output_capacity, char workdir[64])
+                        char *output, size_t output_capacity, char workdir[64],
+                        int block_log_path)
 {
     (void)snprintf(workdir, 64, "/tmp/ticket-c-test-XXXXXX");
     if (mkdtemp(workdir) == NULL) return -1;
@@ -57,6 +58,15 @@ static int run_program(const char *binary, const char *const arguments[], const 
         written += (size_t)count;
     }
     (void)close(input_fd);
+
+    if (block_log_path) {
+        char log_path[128];
+        (void)snprintf(log_path, sizeof(log_path), "%s/ticket_log.txt", workdir);
+        if (mkdir(log_path, 0700) < 0) {
+            (void)close(output_fd);
+            return -1;
+        }
+    }
 
     pid_t child = fork();
     if (child < 0) {
@@ -125,7 +135,7 @@ static void remove_workdir(const char *workdir)
     char path[128];
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); ++i) {
         (void)snprintf(path, sizeof(path), "%s/%s", workdir, files[i]);
-        (void)unlink(path);
+        if (unlink(path) < 0) (void)rmdir(path);
     }
     (void)rmdir(workdir);
 }
@@ -135,6 +145,7 @@ static void test_ticket_application(const char *binary)
     static const char *const arguments[] = {NULL};
     const char *input =
         "/help\n"
+        "\n"
         "/new Alice|Cannot log in|1\n"
         "/new Bob|Payment issue|2\n"
         "/new Cara|Urgent outage|3\n"
@@ -149,13 +160,33 @@ static void test_ticket_application(const char *binary)
         "/stats\n"
         "/quit\n";
     char output[OUTPUT_SIZE], workdir[64], log_path[128];
-    int result = run_program(binary, arguments, input, output, sizeof(output), workdir);
+    int result = run_program(binary, arguments, input, output, sizeof(output), workdir, 0);
     check(result == 0, "ticket application exits successfully");
     check(contains(output, "Created and queued ticket #1 for Alice."), "ticket creation works");
     check(contains(output, "Created ticket #5; queue is full, ticket status is Waiting."), "bounded queue overflow is handled");
     check(contains(output, "status: Resolved"), "ticket processing works");
     (void)snprintf(log_path, sizeof(log_path), "%s/ticket_log.txt", workdir);
     check(file_contains(log_path, "ticket created and queued"), "ticket audit log records creation");
+    remove_workdir(workdir);
+}
+
+static void test_ticket_eof(const char *binary)
+{
+    static const char *const arguments[] = {NULL};
+    char output[OUTPUT_SIZE], workdir[64];
+    int result = run_program(binary, arguments, "", output, sizeof(output), workdir, 0);
+    check(result == 0, "ticket application exits successfully on input EOF");
+    check(contains(output, "Customer Support Ticket System"), "ticket application starts before input EOF");
+    remove_workdir(workdir);
+}
+
+static void test_ticket_log_open_failure(const char *binary)
+{
+    static const char *const arguments[] = {NULL};
+    char output[OUTPUT_SIZE], workdir[64];
+    int result = run_program(binary, arguments, "/quit\n", output, sizeof(output), workdir, 1);
+    check(result == EXIT_FAILURE, "ticket application fails when its log path is a directory");
+    check(contains(output, "open ticket log"), "ticket application reports log-open failure");
     remove_workdir(workdir);
 }
 
@@ -167,6 +198,8 @@ int main(int argc, char **argv)
     }
 
     test_ticket_application(argv[1]);
+    test_ticket_eof(argv[1]);
+    test_ticket_log_open_failure(argv[1]);
 
     if (failures != 0) {
         (void)fprintf(stderr, "%d C integration check(s) failed.\n", failures);
